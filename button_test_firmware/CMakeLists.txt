@@ -44,6 +44,12 @@ pico_set_program_version(button_test_firmware "0.1")
 pico_enable_stdio_uart(button_test_firmware 0)
 pico_enable_stdio_usb(button_test_firmware 1)
 
+# FancyMon and many other serial monitors never assert DTR.
+# Without this, printf is silently dropped even when COM3 is open.
+target_compile_definitions(button_test_firmware PRIVATE
+        PICO_STDIO_USB_CONNECTION_WITHOUT_DTR=1
+)
+
 # Add the standard library to the build
 target_link_libraries(button_test_firmware
         pico_stdlib)
