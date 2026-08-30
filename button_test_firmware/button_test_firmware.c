@@ -21,6 +21,7 @@ int main(void) {
     }
 
     printf("Ready. Press a button.\n");
+    stdio_flush();
 
     while (true) {
         for (int i = 0; i < NUM_BUTTONS; i++) {
@@ -31,6 +32,7 @@ int main(void) {
                 sleep_ms(DEBOUNCE_MS);
                 if (!gpio_get(button_pins[i])) {
                     printf("Button %d clicked!\n", i + 1);
+                    stdio_flush();
                 }
             }
 
