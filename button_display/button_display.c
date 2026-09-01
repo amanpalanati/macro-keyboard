@@ -3,8 +3,9 @@
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 
-/* SSD1306 128x64 OLED on I2C0.
-   SDA = GP4 (pin 6), SCL = GP5 (pin 7), address from bus scan. */
+#define NUM_BUTTONS     8
+#define DEBOUNCE_MS     20
+
 #define I2C_PORT        i2c0
 #define I2C_SDA_PIN     4
 #define I2C_SCL_PIN     5
@@ -13,6 +14,9 @@
 #define OLED_HEIGHT     64
 #define OLED_PAGES      (OLED_HEIGHT / 8)
 #define FB_SIZE         (OLED_WIDTH * OLED_PAGES)
+
+/* Buttons skip GP4/GP5 (I2C). One side of each switch to GND. */
+static const uint button_pins[NUM_BUTTONS] = {0, 1, 2, 3, 6, 7, 8, 9};
 
 static uint8_t framebuffer[FB_SIZE];
 
@@ -199,6 +203,20 @@ static void oled_text(int x, int y, const char *s) {
     }
 }
 
+static void oled_show_message(const char *msg) {
+    oled_clear();
+
+    int text_width = (int)strlen(msg) * 6 - 1;
+    int x = (OLED_WIDTH - text_width) / 2;
+    int y = (OLED_HEIGHT - 7) / 2;
+    if (x < 0) {
+        x = 0;
+    }
+
+    oled_text(x, y, msg);
+    oled_show();
+}
+
 int main(void) {
     stdio_init_all();
 
@@ -209,16 +227,33 @@ int main(void) {
     gpio_pull_up(I2C_SCL_PIN);
 
     oled_init();
-    oled_clear();
+    oled_show_message("Press a button");
 
-    const char *msg = "Hello, world!";
-    int text_width = (int)strlen(msg) * 6 - 1;
-    int x = (OLED_WIDTH - text_width) / 2;
-    int y = (OLED_HEIGHT - 7) / 2;
-    oled_text(x, y, msg);
-    oled_show();
+    bool last_state[NUM_BUTTONS];
+    for (int i = 0; i < NUM_BUTTONS; i++) {
+        gpio_init(button_pins[i]);
+        gpio_set_dir(button_pins[i], GPIO_IN);
+        gpio_pull_up(button_pins[i]);
+        last_state[i] = gpio_get(button_pins[i]);
+    }
 
     while (true) {
-        tight_loop_contents();
+        for (int i = 0; i < NUM_BUTTONS; i++) {
+            bool current = gpio_get(button_pins[i]);
+
+            /* Active-low: falling edge means the button was just pressed. */
+            if (last_state[i] && !current) {
+                sleep_ms(DEBOUNCE_MS);
+                if (!gpio_get(button_pins[i])) {
+                    char msg[24];
+                    snprintf(msg, sizeof(msg), "Button %d clicked!", i + 1);
+                    oled_show_message(msg);
+                }
+            }
+
+            last_state[i] = gpio_get(button_pins[i]);
+        }
+
+        sleep_ms(5);
     }
 }
