@@ -1,10 +1,15 @@
 param(
     [string]$ComPort = "COM3",
-    [int]$BaudRate = 115200
+    [int]$BaudRate = 115200,
+    [int]$WaitSeconds = 15
 )
 
 if ($global:port -is [System.IO.Ports.SerialPort] -and $global:port.IsOpen) {
     $global:port.Close()
+}
+
+function Get-AvailableComPorts {
+    [System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object
 }
 
 $port = New-Object System.IO.Ports.SerialPort $ComPort, $BaudRate, None, 8, one
@@ -14,12 +19,27 @@ $port.Handshake = [System.IO.Ports.Handshake]::None
 $port.DtrEnable = $true
 $port.RtsEnable = $true
 
-try {
-    $port.Open()
-} catch {
-    Write-Host "Could not open $ComPort : $($_.Exception.Message)"
-    Write-Host "Close FancyMon or any other serial monitor, then try again."
-    exit 1
+$opened = $false
+$deadline = (Get-Date).AddSeconds($WaitSeconds)
+while (-not $opened) {
+    try {
+        $port.Open()
+        $opened = $true
+    } catch {
+        if ((Get-Date) -ge $deadline) {
+            $available = @(Get-AvailableComPorts)
+            Write-Host "Could not open $ComPort : $($_.Exception.Message)"
+            if ($available.Count -eq 0) {
+                Write-Host "No COM ports found. The Pico is probably in BOOTSEL, still rebooting after flash, or unplugged."
+            } else {
+                Write-Host ("Ports right now: " + ($available -join ", "))
+                Write-Host "If yours moved, run:  .\serial_monitor.ps1 -ComPort COMx"
+            }
+            exit 1
+        }
+        Write-Host "Waiting for $ComPort ..."
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 Start-Sleep -Milliseconds 300
