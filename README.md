@@ -89,15 +89,51 @@ Bus: `i2c0`, 400 kHz, target address **`0x3C`**. On-chip pull-ups plus Pico GPIO
 
 ## Layers
 
-Encoder **click** cycles `DEV → MEDIA → NAV`. Holding **B9** selects the shifted set (OLED tag gets `*`). Encoder **turn**:
+Encoder **click** cycles `DEV → MEDIA → NAV`. **B9** is hold-FN (OLED tag gets `*`). Keys without a shifted action keep the base mapping.
 
-| Layer | Turn | FN + turn |
+### DEV
+
+| Key | Press | FN |
 | --- | --- | --- |
-| DEV | IDE zoom (`Ctrl` + `=` / `-`) | Command history (Up / Down) |
-| MEDIA | Master volume (HID consumer) | Fine seek (`,` / `.`) |
-| NAV | Alt+Tab (held Alt until idle) | Ctrl+Tab |
+| B1 | `git status` + Enter | `git diff` + Enter |
+| B2 | `git pull` + Enter | `git push` + Enter |
+| B3 | Format (`Alt+Shift+F`) | Save (`Ctrl+S`) |
+| B4 | Build (`Ctrl+Shift+B`) | same |
+| B5 | Step over (`F10`) | Step in (`F11`) |
+| B6 | Toggle breakpoint (`F9`) | Clear breakpoints (`Ctrl+Shift+F9`) |
+| B7 | Clear terminal (`Ctrl+L`) | SIGINT (`Ctrl+C`) |
+| B8 | Run tests (`Ctrl+F5`) | Toggle terminal (`Ctrl+\``) |
+| Encoder | IDE zoom (`Ctrl` + `=` / `-`) | Command history (Up / Down) |
 
-B1–B8 fire layer macros; strings such as `git status` are queued as sequential HID reports (12 ms down / 8 ms up) with no `sleep_ms()` in the USB path.
+### MEDIA
+
+| Key | Press | FN |
+| --- | --- | --- |
+| B1 | Previous track | same |
+| B2 | Play / pause | Stop |
+| B3 | Next track | same |
+| B4 | Scrub back (Left) | same |
+| B5 | Scrub forward (Right) | same |
+| B6 | Mute output | Open music / mixer app |
+| B7 | Mic mute (`Ctrl+Shift+M`) | Deafen (`Ctrl+Shift+D`) |
+| B8 | Snip screen (`Win+Shift+S`) | Record screen (`Win+Alt+R`) |
+| Encoder | Master volume (HID consumer) | Fine seek (`,` / `.`) |
+
+### NAV
+
+| Key | Press | FN |
+| --- | --- | --- |
+| B1 | Task view (`Win+Tab`) | File Explorer (`Win+E`) |
+| B2 | Snap left (`Win+Left`) | Maximize (`Win+Up`) |
+| B3 | Snap right (`Win+Right`) | Minimize (`Win+Down`) |
+| B4 | New tab (`Ctrl+T`) | Reopen tab (`Ctrl+Shift+T`) |
+| B5 | Close tab (`Ctrl+W`) | Tear tab (`Ctrl+Shift+K`) |
+| B6 | Show desktop (`Win+D`) | Settings (`Win+I`) |
+| B7 | Close window (`Alt+F4`) | Task Manager (`Ctrl+Shift+Esc`) |
+| B8 | Lock (`Win+L`) | Clipboard (`Win+V`) |
+| Encoder | Alt+Tab (held Alt until idle) | Ctrl+Tab |
+
+Typed strings such as `git status` are queued as sequential HID reports (12 ms down / 8 ms up) with no `sleep_ms()` in the USB path.
 
 ## Firmware architecture
 
