@@ -2,7 +2,7 @@
 
 A 9-key USB macro keyboard built around a Raspberry Pi Pico: mechanical switches in a diode matrix, an EC11 rotary encoder, and a 128×64 SSD1306 OLED. It enumerates as a HID keyboard plus consumer-control device, with three layers (developer, media, window management).
 
-![Finished keyboard, MEDIA layer on the OLED](docs/photos/final.jpeg)
+<img src="docs/photos/final.jpeg" alt="Finished keyboard, MEDIA layer on the OLED" width="480">
 
 Firmware lives in [`macro_keyboard_v1/`](macro_keyboard_v1/). Bring-up experiments that led to it are in [`bringup/`](bringup/).
 
@@ -192,15 +192,15 @@ Direct GPIO buttons, then serial confirming each press:
 
 | Breadboard | Serial |
 | --- | --- |
-| ![Seven switches on a breadboard, one GPIO each](docs/photos/button_test_prototype.jpeg) | ![USB serial: Button N clicked](docs/photos/button_test_output.png) |
+| <img src="docs/photos/button_test_prototype.jpeg" alt="Seven switches on a breadboard, one GPIO each" width="380"> | <img src="docs/photos/button_test_output.png" alt="USB serial: Button N clicked" width="280"> |
 
 OLED I2C bring-up (`Hello, world!`), then buttons driving the display:
 
-![SSD1306 Hello, world! on the breadboard](docs/photos/lcd_test.jpeg)
+<img src="docs/photos/lcd_test.jpeg" alt="SSD1306 Hello, world! on the breadboard" width="420">
 
 | Idle | After a press |
 | --- | --- |
-| ![OLED: Press a button](docs/photos/button_display_init.jpeg) | ![OLED: Button 3 clicked!](docs/photos/button_display_press.jpeg) |
+| <img src="docs/photos/button_display_init.jpeg" alt="OLED: Press a button" width="380"> | <img src="docs/photos/button_display_press.jpeg" alt="OLED: Button 3 clicked!" width="380"> |
 
 A handheld DMM was the main tool for catching wiring mistakes before blaming firmware. Same checks on the breadboard prototypes and again on the soldered matrix:
 
@@ -216,7 +216,7 @@ Firmware was only useful after those nets were proven. Ghost keys and a dead dis
 
 After the breadboard HID prototype, the enclosure was designed in [Onshape](https://cad.onshape.com/documents/8e5a88cf77f264f3291e7caf/w/3010a7862b44565054253d20/e/3c59f3f0abc7e3a62098627f), printed, and wired as a 3×3 diode matrix with the encoder and OLED in the case. Tests from the table above were re-run on that hardware before writing the shipping firmware.
 
-![Hand-wired 3×3 diode matrix, OLED, and encoder in the printed shell](docs/photos/final_design_wiring.jpeg)
+<img src="docs/photos/final_design_wiring.jpeg" alt="Hand-wired 3×3 diode matrix, OLED, and encoder in the printed shell" width="480">
 
 Optional STEP/STL exports can go in [`docs/cad/`](docs/cad/).
 
