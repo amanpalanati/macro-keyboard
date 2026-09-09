@@ -4,6 +4,8 @@ A 9-key USB macro keyboard built around a Raspberry Pi Pico: mechanical switches
 
 <img src="docs/photos/final.jpeg" alt="Finished keyboard, MEDIA layer on the OLED" width="480">
 
+Can you guess the palette? White shell, charcoal base, red caps, black knob — it's the [NES](https://en.wikipedia.org/wiki/Nintendo_Entertainment_System)!
+
 Firmware lives in [`macro_keyboard_v1/`](macro_keyboard_v1/). Bring-up experiments that led to it are in [`bringup/`](bringup/).
 
 ## Features
