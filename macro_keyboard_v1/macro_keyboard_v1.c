@@ -97,8 +97,7 @@ static bool g_display_dirty = true;
 static bool g_oled_flushing = false;
 static uint8_t g_oled_page = 0;
 static float g_latency_ms = 0.0f;
-static int g_volume = 50;
-static int g_zoom = 50;
+static int g_volume = 0;
 static bool g_alt_held = false;
 static uint32_t g_alt_last_ms = 0;
 static int g_enc_dir = 0;
@@ -355,11 +354,11 @@ static void oled_bar(int x, int y, int w, int h, int pct) {
 }
 
 static void oled_ticks(int x, int y, int dir) {
-    oled_text(x, y, "<--|--->");
+    oled_text(x, y, "<--|-->");
     if (dir < 0) {
-        oled_fill_rect(x, y + 8, 18, 1, true);
+        oled_fill_rect(x, y + 8, 16, 1, true);
     } else if (dir > 0) {
-        oled_fill_rect(x + 24, y + 8, 18, 1, true);
+        oled_fill_rect(x + 24, y + 8, 16, 1, true);
     }
 }
 
@@ -381,7 +380,7 @@ static tusb_desc_device_t const desc_device = {
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor           = USB_VID,
     .idProduct          = USB_PID,
-    .bcdDevice          = 0x0100,
+    .bcdDevice          = 0x0103,
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
     .iSerialNumber      = 0x03,
@@ -397,20 +396,30 @@ static uint8_t const desc_hid_report[] = {
     TUD_HID_REPORT_DESC_CONSUMER(HID_REPORT_ID(REPORT_ID_CONSUMER)),
 };
 
+/* Second HID interface: host app writes volume here (Windows locks the keyboard collection). */
+#define REPORT_ID_VOLUME 1
+static uint8_t const desc_hid_vendor[] = {
+    TUD_HID_REPORT_DESC_GENERIC_INOUT(1, HID_REPORT_ID(REPORT_ID_VOLUME))
+};
+
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
-    (void)instance;
-    return desc_hid_report;
+    return (instance == 1) ? desc_hid_vendor : desc_hid_report;
 }
 
-enum { ITF_NUM_HID, ITF_NUM_TOTAL };
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
-#define EPNUM_HID 0x81
+enum { ITF_NUM_HID, ITF_NUM_VENDOR, ITF_NUM_TOTAL };
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN + TUD_HID_INOUT_DESC_LEN)
+#define EPNUM_HID         0x81
+#define EPNUM_VENDOR_OUT  0x02
+#define EPNUM_VENDOR_IN   0x82
 
 static uint8_t const desc_configuration[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN,
                           TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     TUD_HID_DESCRIPTOR(ITF_NUM_HID, 0, HID_ITF_PROTOCOL_NONE,
-                       sizeof(desc_hid_report), EPNUM_HID, CFG_TUD_HID_EP_BUFSIZE, 5)
+                       sizeof(desc_hid_report), EPNUM_HID, CFG_TUD_HID_EP_BUFSIZE, 5),
+    TUD_HID_INOUT_DESCRIPTOR(ITF_NUM_VENDOR, 0, HID_ITF_PROTOCOL_NONE,
+                          sizeof(desc_hid_vendor), EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN,
+                          CFG_TUD_HID_EP_BUFSIZE, 5)
 };
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
@@ -469,19 +478,38 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     return _desc_str;
 }
 
+static void host_set_volume(uint8_t vol) {
+    if (vol > 100) {
+        vol = 100;
+    }
+    if (g_volume != (int)vol) {
+        g_volume = vol;
+        g_display_dirty = true;
+    }
+}
+
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
                                hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen) {
-    (void)instance;
+    if (instance == 1 && reqlen >= 1) {
+        buffer[0] = (uint8_t)g_volume;
+        return 1;
+    }
     (void)report_id;
     (void)report_type;
-    (void)buffer;
-    (void)reqlen;
     return 0;
 }
 
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                            hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) {
-    (void)instance;
+    if (instance == 1 && bufsize >= 1) {
+        uint8_t vol = buffer[0];
+        if (bufsize >= 2 && buffer[0] == REPORT_ID_VOLUME) {
+            vol = buffer[1];
+        }
+        host_set_volume(vol);
+        return;
+    }
+
     if (report_type != HID_REPORT_TYPE_OUTPUT || bufsize < 1) {
         return;
     }
@@ -632,7 +660,7 @@ static void hid_pump(uint32_t now_ms) {
 static const char *mode_tag(void) {
     switch (g_mode) {
     case MODE_DEV:   return g_shift_held ? "[DEV*]" : "[DEV]";
-    case MODE_MEDIA: return g_shift_held ? "[MED*]" : "[MEDIA]";
+    case MODE_MEDIA: return g_shift_held ? "[MEDIA*]" : "[MEDIA]";
     case MODE_NAV:   return g_shift_held ? "[NAV*]" : "[NAV]";
     default:         return "[?]";
     }
@@ -673,13 +701,13 @@ static void encoder_nav_timeout(uint32_t now_ms) {
     }
 }
 
-static void clamp_pct(int *v, int delta) {
+static void add_clamped(int *v, int delta, int lo, int hi) {
     *v += delta;
-    if (*v < 0) {
-        *v = 0;
+    if (*v < lo) {
+        *v = lo;
     }
-    if (*v > 100) {
-        *v = 100;
+    if (*v > hi) {
+        *v = hi;
     }
 }
 
@@ -695,7 +723,6 @@ static void on_encoder_turn(int dir) {
         } else {
             hid_tap(KEYBOARD_MODIFIER_LEFTCTRL,
                     dir > 0 ? HID_KEY_EQUAL : HID_KEY_MINUS);
-            clamp_pct(&g_zoom, dir > 0 ? 5 : -5);
         }
         break;
     case MODE_MEDIA:
@@ -705,7 +732,7 @@ static void on_encoder_turn(int dir) {
         } else {
             hid_consumer(dir > 0 ? HID_USAGE_CONSUMER_VOLUME_INCREMENT
                                  : HID_USAGE_CONSUMER_VOLUME_DECREMENT);
-            clamp_pct(&g_volume, dir > 0 ? 2 : -2);
+            add_clamped(&g_volume, dir > 0 ? 2 : -2, 0, 100);
         }
         break;
     case MODE_NAV:
@@ -763,9 +790,7 @@ static void on_button(int button) {
     case MODE_MEDIA:
         switch (button) {
         case 1:
-            if (!fn) {
-                hid_consumer(HID_USAGE_CONSUMER_SCAN_PREVIOUS);
-            }
+            hid_consumer(HID_USAGE_CONSUMER_SCAN_PREVIOUS);
             break;
         case 2:
             if (fn) {
@@ -775,19 +800,13 @@ static void on_button(int button) {
             }
             break;
         case 3:
-            if (!fn) {
-                hid_consumer(HID_USAGE_CONSUMER_SCAN_NEXT);
-            }
+            hid_consumer(HID_USAGE_CONSUMER_SCAN_NEXT);
             break;
         case 4:
-            if (!fn) {
-                hid_tap(0, HID_KEY_ARROW_LEFT);
-            }
+            hid_tap(0, HID_KEY_ARROW_LEFT);
             break;
         case 5:
-            if (!fn) {
-                hid_tap(0, HID_KEY_ARROW_RIGHT);
-            }
+            hid_tap(0, HID_KEY_ARROW_RIGHT);
             break;
         case 6:
             if (fn) {
@@ -888,12 +907,12 @@ static const char *const labels_dev_fn[8] = {
 };
 
 static const char *const labels_media[8] = {
-    "1:prev trk", "2:play/pau", "3:next trk", "4:-10s",
-    "5:+10s", "6:mute out", "7:mic mute", "8:snip scr"
+    "1:prev trk", "2:play/pau", "3:next trk", "4:scrb bck",
+    "5:scrb fwd", "6:mute out", "7:mic mute", "8:snip scr"
 };
 static const char *const labels_media_fn[8] = {
-    "1: --", "2:stop", "3: --", "4: --",
-    "5: --", "6:app mus", "7:deafen", "8:rec scr"
+    "1:prev trk", "2:stop", "3:next trk", "4:scrb bck",
+    "5:scrb fwd", "6:app mus", "7:deafen", "8:rec scr"
 };
 
 static const char *const labels_nav[8] = {
@@ -965,8 +984,7 @@ static void draw_context_bar(void) {
             show_ticks = true;
         } else {
             label = "ENC: ZOOM";
-            show_bar = true;
-            pct = g_zoom;
+            show_ticks = true;
         }
         break;
     case MODE_MEDIA:
@@ -990,8 +1008,14 @@ static void draw_context_bar(void) {
     oled_text(1, y, label);
 
     if (show_bar) {
-        oled_bar(56, y, 48, 7, pct);
-        char pct_s[8];
+        if (pct < 0) {
+            pct = 0;
+        }
+        if (pct > 100) {
+            pct = 100;
+        }
+        oled_bar(56, y, 42, 7, pct);
+        char pct_s[10];
         snprintf(pct_s, sizeof(pct_s), "%d%%", pct);
         oled_text_right(OLED_WIDTH - 1, y, pct_s);
     } else if (show_ticks) {
