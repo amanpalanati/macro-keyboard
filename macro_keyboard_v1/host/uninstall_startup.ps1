@@ -4,12 +4,17 @@
 $ErrorActionPreference = "Stop"
 
 $startup = [Environment]::GetFolderPath("Startup")
-$lnkPath = Join-Path $startup "Macro Keypad Volume.lnk"
-
-if (Test-Path $lnkPath) {
-    Remove-Item $lnkPath -Force
-    Write-Host "Removed $lnkPath"
-} else {
+$lnkNames = @("Macro Keyboard Volume.lnk", "Macro Keypad Volume.lnk")
+$removed = $false
+foreach ($name in $lnkNames) {
+    $lnkPath = Join-Path $startup $name
+    if (Test-Path $lnkPath) {
+        Remove-Item $lnkPath -Force
+        Write-Host "Removed $lnkPath"
+        $removed = $true
+    }
+}
+if (-not $removed) {
     Write-Host "No Startup shortcut found."
 }
 

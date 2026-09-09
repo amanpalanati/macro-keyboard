@@ -430,7 +430,7 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
 static char const *string_desc_arr[] = {
     (const char[]){0x09, 0x04},
     "Macro Keyboard",
-    "Macro Keypad v1",
+    "Macro Keyboard v1",
     NULL,
 };
 

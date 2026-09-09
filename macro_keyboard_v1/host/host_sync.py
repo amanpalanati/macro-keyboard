@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Push the Windows default-output volume to the keypad over vendor HID."""
+"""Push the Windows default-output volume to the keyboard over vendor HID."""
 
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ def find_vendor_path() -> Optional[bytes]:
     return None
 
 
-def open_keypad() -> hid.device:
+def open_keyboard() -> hid.device:
     path = find_vendor_path()
     if path is None:
-        raise OSError("keypad not found")
+        raise OSError("keyboard not found")
     dev = hid.device()
     dev.open_path(path)
     return dev
@@ -63,7 +63,7 @@ def main() -> None:
     while True:
         try:
             if dev is None:
-                dev = open_keypad()
+                dev = open_keyboard()
                 last_vol = None
                 print("Connected", flush=True)
 

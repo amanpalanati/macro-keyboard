@@ -44,7 +44,7 @@ while (-not $opened) {
 
 Start-Sleep -Milliseconds 300
 
-Write-Host "Listening on $ComPort. Press a keypad button. Ctrl+C to stop."
+Write-Host "Listening on $ComPort. Press a keyboard button. Ctrl+C to stop."
 
 $buffer = New-Object byte[] 256
 try {

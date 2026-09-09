@@ -7,7 +7,11 @@ $ErrorActionPreference = "Stop"
 $hostDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script = Join-Path $hostDir "host_sync.py"
 $startup = [Environment]::GetFolderPath("Startup")
-$lnkPath = Join-Path $startup "Macro Keypad Volume.lnk"
+$lnkPath = Join-Path $startup "Macro Keyboard Volume.lnk"
+$oldLnkPath = Join-Path $startup "Macro Keypad Volume.lnk"
+if (Test-Path $oldLnkPath) {
+    Remove-Item $oldLnkPath -Force
+}
 
 if (-not (Test-Path $script)) {
     throw "host_sync.py not found next to this installer."
@@ -37,7 +41,7 @@ $lnk.TargetPath = $pythonw
 $lnk.Arguments = "`"$script`""
 $lnk.WorkingDirectory = $hostDir
 $lnk.WindowStyle = 7
-$lnk.Description = "Pushes Windows volume to the macro keypad OLED"
+$lnk.Description = "Pushes Windows volume to the macro keyboard OLED"
 $lnk.Save()
 
 $already = Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe' OR Name = 'python.exe'" -ErrorAction SilentlyContinue |
@@ -51,5 +55,5 @@ if (-not $already) {
 }
 
 Write-Host "Installed: $lnkPath"
-Write-Host "It will start with Windows. Unplug/replug the keypad anytime; the helper waits for it."
+Write-Host "It will start with Windows. Unplug/replug the keyboard anytime; the helper waits for it."
 Write-Host "Remove with: .\uninstall_startup.ps1"
