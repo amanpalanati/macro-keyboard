@@ -51,6 +51,7 @@
 #define ALT_TAB_HOLD_MS 750
 #define ENC_DETENT_STEPS 4
 #define OLED_FRAME_MS   40
+#define OLED_SLEEP_MS   (3u * 60u * 1000u)
 #define HID_Q_LEN       48
 
 static const uint col_pins[NUM_COLS] = {COL0_PIN, COL1_PIN, COL2_PIN};
@@ -95,7 +96,9 @@ static bool g_num = false;
 static bool g_shift_held = false;
 static bool g_display_dirty = true;
 static bool g_oled_flushing = false;
+static bool g_oled_asleep = false;
 static uint8_t g_oled_page = 0;
+static uint32_t g_last_input_ms = 0;
 static float g_latency_ms = 0.0f;
 static int g_volume = 0;
 static bool g_alt_held = false;
@@ -233,6 +236,33 @@ static void oled_init(void) {
     for (size_t i = 0; i < count_of(cmds); i++) {
         oled_cmd(cmds[i]);
     }
+}
+
+static void oled_set_on(bool on) {
+    oled_cmd(on ? 0xAF : 0xAE);
+}
+
+static void note_user_input(uint32_t now_ms) {
+    g_last_input_ms = now_ms;
+    if (!g_oled_asleep) {
+        return;
+    }
+    g_oled_asleep = false;
+    g_oled_flushing = false;
+    oled_set_on(true);
+    g_display_dirty = true;
+}
+
+static void oled_idle_tick(uint32_t now_ms) {
+    if (g_oled_asleep) {
+        return;
+    }
+    if ((now_ms - g_last_input_ms) < OLED_SLEEP_MS) {
+        return;
+    }
+    g_oled_asleep = true;
+    g_oled_flushing = false;
+    oled_set_on(false);
 }
 
 static void oled_flush_page(uint8_t page) {
@@ -1156,6 +1186,7 @@ int main(void) {
     g_enc_stable = g_enc_raw;
 
     uint32_t last_ui_ms = 0u - OLED_FRAME_MS;
+    g_last_input_ms = to_ms_since_boot(get_absolute_time());
 
     while (true) {
         tud_task();
@@ -1177,7 +1208,8 @@ int main(void) {
 
         /* FN (B9) uses the raw scan so the modifier has no extra debounce lag. */
         bool fn = raw[FN_BUTTON];
-        if (fn != g_shift_held) {
+        bool fn_edge = (fn != g_shift_held);
+        if (fn_edge) {
             g_shift_held = fn;
             if (g_alt_held) {
                 hid_release_all();
@@ -1193,6 +1225,16 @@ int main(void) {
                      now_ms, DEBOUNCE_MS, &enc_click);
 
         g_latency_ms = (time_us_32() - t0) / 1000.0f;
+
+        bool activity = fn_edge || turn || enc_click;
+        for (int i = 1; i <= 8; i++) {
+            if (pressed[i]) {
+                activity = true;
+            }
+        }
+        if (activity) {
+            note_user_input(now_ms);
+        }
 
         hid_pump(now_ms);
 
@@ -1214,22 +1256,25 @@ int main(void) {
 
         encoder_nav_timeout(now_ms);
         hid_pump(now_ms);
+        oled_idle_tick(now_ms);
 
-        if (g_oled_flushing) {
-            oled_flush_page(g_oled_page);
-            g_oled_page++;
-            if (g_oled_page >= OLED_PAGES) {
-                g_oled_flushing = false;
-            }
-        } else {
-            bool periodic = (now_ms - last_ui_ms) >= 250;
-            bool paced = (now_ms - last_ui_ms) >= OLED_FRAME_MS;
-            if (periodic || (g_display_dirty && paced)) {
-                ui_draw();
-                g_display_dirty = false;
-                g_oled_flushing = true;
-                g_oled_page = 0;
-                last_ui_ms = now_ms;
+        if (!g_oled_asleep) {
+            if (g_oled_flushing) {
+                oled_flush_page(g_oled_page);
+                g_oled_page++;
+                if (g_oled_page >= OLED_PAGES) {
+                    g_oled_flushing = false;
+                }
+            } else {
+                bool periodic = (now_ms - last_ui_ms) >= 250;
+                bool paced = (now_ms - last_ui_ms) >= OLED_FRAME_MS;
+                if (periodic || (g_display_dirty && paced)) {
+                    ui_draw();
+                    g_display_dirty = false;
+                    g_oled_flushing = true;
+                    g_oled_page = 0;
+                    last_ui_ms = now_ms;
+                }
             }
         }
     }

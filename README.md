@@ -13,7 +13,7 @@ Firmware lives in [`macro_keyboard_v1/`](macro_keyboard_v1/). Bring-up experimen
 - **9-key matrix** with per-key debounce and **B9 as a hold-FN** layer (keys without a shifted action keep their base mapping)
 - **Three layers**, cycled by clicking the encoder: `[DEV]`, `[MEDIA]`, `[NAV]`
 - **Encoder** for IDE zoom, volume, or window/tab switching (FN changes the action)
-- **OLED** with live layer badge, Caps/Num lock, scan latency, and a host-fed volume bar in media mode
+- **OLED** with live layer badge, Caps/Num lock, scan latency, and a host-fed volume bar in media mode; blanks after **3 minutes** idle and wakes on the next key or encoder event
 - **Non-blocking HID** keystroke queue so USB is not stalled by macros or I2C
 
 ## Tech stack
