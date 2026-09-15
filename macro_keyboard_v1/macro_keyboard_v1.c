@@ -53,6 +53,13 @@
 #define OLED_FRAME_MS   40
 #define OLED_SLEEP_MS   (3u * 60u * 1000u)
 #define HID_Q_LEN       48
+#define MEDIA_TITLE_LEN 21
+#define MEDIA_ARTIST_LEN 21
+#define MEDIA_REPORT_LEN 48
+#define MEDIA_FLAG_ACTIVE   0x01u
+#define MEDIA_FLAG_PLAYING  0x02u
+#define MEDIA_FLAG_TIMELINE 0x04u
+#define MEDIA_PAUSE_LABELS_MS (60u * 1000u)
 
 static const uint col_pins[NUM_COLS] = {COL0_PIN, COL1_PIN, COL2_PIN};
 static const uint row_pins[NUM_ROWS] = {ROW0_PIN, ROW1_PIN, ROW2_PIN};
@@ -105,6 +112,16 @@ static bool g_alt_held = false;
 static uint32_t g_alt_last_ms = 0;
 static int g_enc_dir = 0;
 static uint32_t g_enc_dir_ms = 0;
+
+static bool g_media_active = false;
+static bool g_media_playing = false;
+static bool g_media_timeline = false;
+static uint16_t g_media_pos_s = 0;
+static uint16_t g_media_dur_s = 0;
+static uint32_t g_media_pos_at_ms = 0;
+static uint32_t g_media_paused_since_ms = 0;
+static char g_media_title[MEDIA_TITLE_LEN + 1];
+static char g_media_artist[MEDIA_ARTIST_LEN + 1];
 
 static hid_step_t hid_q[HID_Q_LEN];
 static uint8_t hid_q_head = 0;
@@ -242,7 +259,7 @@ static void oled_set_on(bool on) {
     oled_cmd(on ? 0xAF : 0xAE);
 }
 
-static void note_user_input(uint32_t now_ms) {
+static void oled_wake(uint32_t now_ms) {
     g_last_input_ms = now_ms;
     if (!g_oled_asleep) {
         return;
@@ -253,8 +270,19 @@ static void note_user_input(uint32_t now_ms) {
     g_display_dirty = true;
 }
 
+static void note_user_input(uint32_t now_ms) {
+    oled_wake(now_ms);
+}
+
+static bool oled_media_keeps_awake(void) {
+    return g_mode == MODE_MEDIA && g_media_playing;
+}
+
 static void oled_idle_tick(uint32_t now_ms) {
     if (g_oled_asleep) {
+        return;
+    }
+    if (oled_media_keeps_awake()) {
         return;
     }
     if ((now_ms - g_last_input_ms) < OLED_SLEEP_MS) {
@@ -410,7 +438,7 @@ static tusb_desc_device_t const desc_device = {
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor           = USB_VID,
     .idProduct          = USB_PID,
-    .bcdDevice          = 0x0103,
+    .bcdDevice          = 0x0104,
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
     .iSerialNumber      = 0x03,
@@ -426,10 +454,35 @@ static uint8_t const desc_hid_report[] = {
     TUD_HID_REPORT_DESC_CONSUMER(HID_REPORT_ID(REPORT_ID_CONSUMER)),
 };
 
-/* Second HID interface: host app writes volume here (Windows locks the keyboard collection). */
+/* Second HID interface: host writes volume + now-playing over vendor page. */
 #define REPORT_ID_VOLUME 1
+#define REPORT_ID_MEDIA  2
+
+/* Report 1: 1-byte volume. Report 2: 48-byte media metadata (OUTPUT only). */
 static uint8_t const desc_hid_vendor[] = {
-    TUD_HID_REPORT_DESC_GENERIC_INOUT(1, HID_REPORT_ID(REPORT_ID_VOLUME))
+    0x06, 0x00, 0xFF, /* Usage Page (Vendor 0xFF00) */
+    0x09, 0x01,       /* Usage (0x01) */
+    0xA1, 0x01,       /* Collection (Application) */
+
+    0x85, REPORT_ID_VOLUME,
+    0x09, 0x02,
+    0x15, 0x00,
+    0x26, 0xFF, 0x00,
+    0x75, 0x08,
+    0x95, 0x01,
+    0x81, 0x02, /* Input */
+    0x09, 0x02,
+    0x91, 0x02, /* Output */
+
+    0x85, REPORT_ID_MEDIA,
+    0x09, 0x03,
+    0x15, 0x00,
+    0x26, 0xFF, 0x00,
+    0x75, 0x08,
+    0x95, MEDIA_REPORT_LEN,
+    0x91, 0x02, /* Output */
+
+    0xC0
 };
 
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
@@ -518,25 +571,164 @@ static void host_set_volume(uint8_t vol) {
     }
 }
 
+static void media_copy_field(char *dst, size_t dst_len, uint8_t const *src, size_t src_len) {
+    size_t i = 0;
+    while (i + 1 < dst_len && i < src_len) {
+        char c = (char)src[i];
+        if (c == '\0') {
+            break;
+        }
+        if (c < 32 || c > 126) {
+            c = '?';
+        }
+        dst[i++] = c;
+    }
+    dst[i] = '\0';
+}
+
+static uint16_t media_read_u16le(uint8_t const *p) {
+    return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+}
+
+static uint16_t media_display_pos_s(uint32_t now_ms) {
+    /* Host already advances with SMTC LastUpdatedTime — do not add a second clock. */
+    (void)now_ms;
+    return g_media_pos_s;
+}
+
+static bool media_show_now_playing(uint32_t now_ms) {
+    if (!g_media_active) {
+        return false;
+    }
+    if (g_media_playing) {
+        return true;
+    }
+    if (g_media_paused_since_ms == 0) {
+        return false;
+    }
+    return (now_ms - g_media_paused_since_ms) < MEDIA_PAUSE_LABELS_MS;
+}
+
+static void host_set_media(uint8_t const *data, uint16_t len) {
+    if (len < MEDIA_REPORT_LEN) {
+        return;
+    }
+
+    bool was_playing = g_media_playing;
+    bool active = (data[0] & MEDIA_FLAG_ACTIVE) != 0;
+    bool playing = (data[0] & MEDIA_FLAG_PLAYING) != 0;
+    bool timeline = (data[0] & MEDIA_FLAG_TIMELINE) != 0;
+    uint16_t pos = media_read_u16le(&data[1]);
+    uint16_t dur = media_read_u16le(&data[3]);
+    char title[MEDIA_TITLE_LEN + 1];
+    char artist[MEDIA_ARTIST_LEN + 1];
+
+    media_copy_field(title, sizeof(title), &data[5], MEDIA_TITLE_LEN);
+    media_copy_field(artist, sizeof(artist), &data[5 + MEDIA_TITLE_LEN], MEDIA_ARTIST_LEN);
+
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    bool meta_changed = (strcmp(title, g_media_title) != 0) ||
+                        (strcmp(artist, g_media_artist) != 0);
+    bool play_edge = (playing && active) != was_playing;
+    bool adopt_pos = true;
+
+    /*
+     * While playing, ignore small backwards SMTC glitches. Always snap on
+     * pause/play edges, seeks, and track changes.
+     */
+    if (active && playing && was_playing && timeline && g_media_timeline &&
+        !meta_changed && !play_edge) {
+        int delta = (int)pos - (int)g_media_pos_s;
+        if (delta < 0 && delta > -15) {
+            adopt_pos = false;
+        }
+    }
+    if (!playing || play_edge || meta_changed) {
+        adopt_pos = true;
+    }
+
+    bool changed = (active != g_media_active) || (playing != g_media_playing) ||
+                   (timeline != g_media_timeline) || (dur != g_media_dur_s) ||
+                   meta_changed || (adopt_pos && pos != g_media_pos_s);
+
+    g_media_active = active;
+    g_media_playing = playing && active;
+    g_media_timeline = timeline && active;
+    g_media_dur_s = dur;
+    memcpy(g_media_title, title, sizeof(g_media_title));
+    memcpy(g_media_artist, artist, sizeof(g_media_artist));
+
+    if (adopt_pos) {
+        g_media_pos_s = pos;
+        g_media_pos_at_ms = now;
+    }
+
+    if (g_media_playing) {
+        g_media_paused_since_ms = 0;
+    } else if (g_media_active) {
+        if (was_playing || g_media_paused_since_ms == 0) {
+            g_media_paused_since_ms = now;
+        }
+    } else {
+        g_media_paused_since_ms = 0;
+    }
+
+    if (g_mode == MODE_MEDIA && g_media_playing) {
+        oled_wake(now);
+    } else if (was_playing && !g_media_playing && g_mode == MODE_MEDIA) {
+        /* Arm idle sleep from the pause / session-end moment. */
+        g_last_input_ms = now;
+    }
+
+    if (changed) {
+        g_display_dirty = true;
+    }
+}
+
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
                                hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen) {
-    if (instance == 1 && reqlen >= 1) {
+    (void)report_type;
+    if (instance == 1 && report_id == REPORT_ID_VOLUME && reqlen >= 1) {
         buffer[0] = (uint8_t)g_volume;
         return 1;
     }
     (void)report_id;
-    (void)report_type;
     return 0;
 }
 
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                            hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) {
     if (instance == 1 && bufsize >= 1) {
-        uint8_t vol = buffer[0];
-        if (bufsize >= 2 && buffer[0] == REPORT_ID_VOLUME) {
-            vol = buffer[1];
+        uint8_t rid = report_id;
+        uint8_t const *data = buffer;
+        uint16_t len = bufsize;
+
+        if (rid == 0) {
+            rid = buffer[0];
+            data = buffer + 1;
+            len = (uint16_t)(bufsize - 1);
+        } else if (rid == REPORT_ID_VOLUME && len >= 2 && buffer[0] == REPORT_ID_VOLUME) {
+            data = buffer + 1;
+            len = (uint16_t)(bufsize - 1);
+        } else if (rid == REPORT_ID_MEDIA && len == (MEDIA_REPORT_LEN + 1) &&
+                   buffer[0] == REPORT_ID_MEDIA) {
+            data = buffer + 1;
+            len = MEDIA_REPORT_LEN;
         }
-        host_set_volume(vol);
+
+        if (rid == REPORT_ID_VOLUME && len >= 1) {
+            host_set_volume(data[0]);
+            return;
+        }
+        if (rid == REPORT_ID_MEDIA) {
+            host_set_media(data, len);
+            return;
+        }
+        /* Legacy: bare 1-byte volume with no report id. */
+        if (report_id == 0 && bufsize == 1) {
+            host_set_volume(buffer[0]);
+            return;
+        }
         return;
     }
 
@@ -975,6 +1167,48 @@ static void draw_matrix(void) {
     oled_vline_dashed(63, ZONE_MID_Y + 1, ZONE_BOT_Y - 2);
 }
 
+static void fmt_mmss(char *buf, size_t n, uint16_t sec) {
+    snprintf(buf, n, "%u:%02u", (unsigned)(sec / 60u), (unsigned)(sec % 60u));
+}
+
+static void draw_now_playing(void) {
+    const char *title = g_media_title[0] ? g_media_title : "Unknown";
+    const char *artist = g_media_artist[0] ? g_media_artist : " ";
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    uint16_t pos = media_display_pos_s(now);
+    uint16_t dur = g_media_timeline ? g_media_dur_s : 0;
+    int pct = 0;
+
+    oled_text(1, 14, title);
+    oled_text(1, 24, artist);
+
+    if (g_media_timeline) {
+        char left[12];
+        char right[12];
+        char line[28];
+        fmt_mmss(left, sizeof(left), pos);
+        fmt_mmss(right, sizeof(right), dur);
+        snprintf(line, sizeof(line), "%s / %s", left, right);
+        oled_text(1, 34, line);
+        if (dur > 0) {
+            pct = (int)(((uint32_t)pos * 100u) / dur);
+        }
+        oled_bar(1, 44, OLED_WIDTH - 2, 5, pct);
+    } else {
+        oled_text(1, 34, g_media_playing ? "Playing" : "Paused");
+        oled_bar(1, 44, OLED_WIDTH - 2, 5, 0);
+    }
+}
+
+static void draw_mid_zone(void) {
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (g_mode == MODE_MEDIA && media_show_now_playing(now)) {
+        draw_now_playing();
+    } else {
+        draw_matrix();
+    }
+}
+
 static void draw_status_bar(void) {
     const char *tag = mode_tag();
     oled_text_badge(1, 2, tag);
@@ -1056,7 +1290,7 @@ static void draw_context_bar(void) {
 static void ui_draw(void) {
     oled_clear();
     draw_status_bar();
-    draw_matrix();
+    draw_mid_zone();
     draw_context_bar();
 }
 
@@ -1246,6 +1480,9 @@ int main(void) {
             hid_release_all();
             g_mode = (app_mode_t)((g_mode + 1) % MODE_COUNT);
             g_display_dirty = true;
+            if (g_mode == MODE_MEDIA && g_media_playing) {
+                oled_wake(now_ms);
+            }
         }
 
         for (int i = 1; i <= 8; i++) {

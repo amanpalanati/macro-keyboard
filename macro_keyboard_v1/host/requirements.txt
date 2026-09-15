@@ -1,3 +1,6 @@
 hidapi>=0.14.0
 pycaw>=20240210
 comtypes>=1.4.0
+winrt-runtime>=3.0.0
+winrt-Windows.Foundation>=3.0.0
+winrt-Windows.Media.Control>=3.0.0

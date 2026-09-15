@@ -41,7 +41,7 @@ $lnk.TargetPath = $pythonw
 $lnk.Arguments = "`"$script`""
 $lnk.WorkingDirectory = $hostDir
 $lnk.WindowStyle = 7
-$lnk.Description = "Pushes Windows volume to the macro keyboard OLED"
+$lnk.Description = "Pushes Windows volume + now-playing to the macro keyboard OLED"
 $lnk.Save()
 
 $already = Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe' OR Name = 'python.exe'" -ErrorAction SilentlyContinue |

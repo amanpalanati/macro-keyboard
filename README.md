@@ -13,7 +13,7 @@ Firmware lives in [`macro_keyboard_v1/`](macro_keyboard_v1/). Bring-up experimen
 - **9-key matrix** with per-key debounce and **B9 as a hold-FN** layer (keys without a shifted action keep their base mapping)
 - **Three layers**, cycled by clicking the encoder: `[DEV]`, `[MEDIA]`, `[NAV]`
 - **Encoder** for IDE zoom, volume, or window/tab switching (FN changes the action)
-- **OLED** with live layer badge, Caps/Num lock, scan latency, and a host-fed volume bar in media mode; blanks after **3 minutes** idle and wakes on the next key or encoder event
+- **OLED** with live layer badge, Caps/Num lock, scan latency, and a host-fed volume bar in media mode; in `[MEDIA]` the mid zone swaps keymap labels for now-playing (title, artist, scrubber) when the host helper sees an active session. Blanks after **3 minutes** idle and wakes on the next key or encoder event — except while media is **playing** in `[MEDIA]`, where sleep is inhibited until pause / session end
 - **Non-blocking HID** keystroke queue so USB is not stalled by macros or I2C
 
 ## Tech stack
@@ -24,13 +24,13 @@ Firmware lives in [`macro_keyboard_v1/`](macro_keyboard_v1/). Bring-up experimen
 | Firmware | C11, Pico SDK **2.3.1**, CMake / Ninja, GNU Arm toolchain |
 | USB | TinyUSB device stack — HID keyboard + consumer control + vendor IN/OUT |
 | Display | SSD1306, 128×64, `i2c0` Fast Mode (400 kHz), 5×7 framebuffer font |
-| Host helper | Python 3, `hidapi`, `pycaw` / Core Audio (Windows mixer → vendor HID) |
+| Host helper | Python 3, `hidapi`, `pycaw`, WinRT SMTC (volume + now-playing → vendor HID) |
 | CAD | [Onshape](https://cad.onshape.com/documents/8e5a88cf77f264f3291e7caf/w/3010a7862b44565054253d20/e/3c59f3f0abc7e3a62098627f) (enclosure + fit check), FDM 3D print |
 
 USB identity: **VID `0xCAFE`**, **PID `0x4D4B`**. Composite device with two HID interfaces (boot-protocol none):
 
 1. Keyboard (report ID 1) + consumer (report ID 2), interrupt IN `0x81`
-2. Vendor usage page `0xFF00` IN/OUT (`0x82` / `0x02`) — 1-byte volume reports from the host
+2. Vendor usage page `0xFF00` IN/OUT (`0x82` / `0x02`) — report ID **1** volume (1 byte), report ID **2** now-playing (48 bytes: flags, position/duration seconds, title, artist)
 
 ## Hardware
 
@@ -151,18 +151,20 @@ OLED layout (128×64):
 | Zone | Y | Contents |
 | --- | --- | --- |
 | Status | 0–11 | Inverted layer badge, Caps/Num boxes, scan latency |
-| Matrix | 12–49 | Two columns of labels for B1–B8 (FN swaps names live) |
+| Matrix | 12–49 | Two columns of labels for B1–B8 (FN swaps names live); in MEDIA with an active host session: title, artist, timestamp, scrubber |
 | Context | 50–63 | Encoder function; volume bar (0–100%) in MEDIA |
 
 I2C writes use a 5 ms timeout so a missing display cannot hang USB. Caps/Num come from the keyboard HID output (LED) report.
 
-Host volume: Windows cannot expose the mixer to a keyboard collection, so `host_sync.py` opens the **vendor** HID interface and writes `[report_id=1, percent]`. Keys still work if that helper is not running; the MEDIA bar then only follows local encoder steps.
+Host helper: Windows cannot expose the mixer to a keyboard collection, so `host_sync.py` opens the **vendor** HID interface and writes `[report_id=1, percent]` for volume plus `[report_id=2, …]` for SMTC now-playing (Spotify, YouTube, etc.). Keys still work if that helper is not running; the MEDIA bar then only follows local encoder steps and the mid zone stays on keymap labels.
+
+Sleep: **3 minutes** without local key/encoder activity blanks the OLED. In `[MEDIA]` while the host reports **playing**, sleep is inhibited; pause or “no session” re-arms the idle timer from that moment. Other layers sleep normally even if media is playing on the PC.
 
 ### Build and flash
 
 Pico SDK 2.3.x, CMake / Ninja (or the Raspberry Pi Pico VS Code extension). Open `macro_keyboard_v1/`, configure, build, and copy `build/macro_keyboard_v1.uf2` to the Pico in BOOTSEL mode.
 
-### Volume helper (optional)
+### Host helper (optional)
 
 ```powershell
 cd macro_keyboard_v1/host
@@ -170,7 +172,7 @@ pip install -r requirements.txt
 .\install_startup.ps1
 ```
 
-That starts a hidden `pythonw` process and adds a Startup shortcut so the volume bar tracks Windows after login. Remove with `.\uninstall_startup.ps1`.
+That starts a hidden `pythonw` process and adds a Startup shortcut so volume + now-playing track Windows after login. Remove with `.\uninstall_startup.ps1`. Flash firmware **bcdDevice ≥ 0x0104** (this tree) so the vendor HID descriptor accepts the media report.
 
 ---
 
