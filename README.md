@@ -235,7 +235,7 @@ Optional STEP/STL exports can go in [`docs/cad/`](docs/cad/).
 ## Repository layout
 
 ```text
-macro_keyboard_v1/     Product firmware, TinyUSB config, optional host helper
+macro_keyboard_v1/      Product firmware, TinyUSB config, optional host helper
 bringup/                Ordered hardware experiments (see table above)
 docs/photos/            Bring-up and assembly photos
 ```
