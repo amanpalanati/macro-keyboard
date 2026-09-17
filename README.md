@@ -30,7 +30,7 @@ Firmware lives in [`macro_keyboard_v1/`](macro_keyboard_v1/). Bring-up experimen
 USB identity: **VID `0xCAFE`**, **PID `0x4D4B`**. Composite device with two HID interfaces (boot-protocol none):
 
 1. Keyboard (report ID 1) + consumer (report ID 2), interrupt IN `0x81`
-2. Vendor usage page `0xFF00` IN/OUT (`0x82` / `0x02`) — report ID **1** volume (1 byte), report ID **2** now-playing (48 bytes: flags, position/duration seconds, title, artist)
+2. Vendor usage page `0xFF00` IN/OUT (`0x82` / `0x02`) — report ID **1** volume (1 byte), report ID **2** now-playing (48 bytes), report ID **3** Discord status (1 byte flags)
 
 ## Hardware
 
@@ -156,7 +156,9 @@ OLED layout (128×64):
 
 I2C writes use a 5 ms timeout so a missing display cannot hang USB. Caps/Num come from the keyboard HID output (LED) report.
 
-Host helper: Windows cannot expose the mixer to a keyboard collection, so `host_sync.py` opens the **vendor** HID interface and writes `[report_id=1, percent]` for volume plus `[report_id=2, …]` for SMTC now-playing (Spotify, YouTube, etc.). Keys still work if that helper is not running; the MEDIA bar then only follows local encoder steps and the mid zone stays on keymap labels.
+Host helper: Windows cannot expose the mixer to a keyboard collection, so `host_sync.py` opens the **vendor** HID interface and writes `[report_id=1, percent]` for volume plus `[report_id=2, …]` for SMTC now-playing (Spotify, YouTube, etc.) and `[report_id=3, flags]` for Discord open/mute/deafen. Keys still work if that helper is not running; the MEDIA bar then only follows local encoder steps and the mid zone stays on keymap labels.
+
+When Discord has a **visible window**, the status bar shows mic + headphone icons on the right (crossed when muted/deafened). First launch may show a Discord authorize prompt (StreamKit RPC); after that the token is cached under `%LOCALAPPDATA%\MacroKeyboard\`.
 
 Sleep: **3 minutes** without local key/encoder activity blanks the OLED. In `[MEDIA]` while the host reports **playing**, sleep is inhibited; pause or “no session” re-arms the idle timer from that moment. Other layers sleep normally even if media is playing on the PC.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Push Windows volume + now-playing info to the keyboard over vendor HID."""
+"""Push Windows volume, now-playing, and Discord mute/deafen to the keyboard."""
 
 from __future__ import annotations
 
@@ -25,17 +25,23 @@ except ImportError as exc:  # pragma: no cover
         "(winrt-Windows.Media.Control)."
     ) from exc
 
+from discord_voice import DiscordVoice
+
 USB_VID = 0xCAFE
 USB_PID = 0x4D4B
 VENDOR_USAGE_PAGE = 0xFF00
 REPORT_ID_VOLUME = 1
 REPORT_ID_MEDIA = 2
+REPORT_ID_DISCORD = 3
 MEDIA_REPORT_LEN = 48
 MEDIA_TITLE_LEN = 21
 MEDIA_ARTIST_LEN = 21
 MEDIA_FLAG_ACTIVE = 0x01
 MEDIA_FLAG_PLAYING = 0x02
 MEDIA_FLAG_TIMELINE = 0x04
+DISCORD_FLAG_OPEN = 0x01
+DISCORD_FLAG_MUTED = 0x02
+DISCORD_FLAG_DEAF = 0x04
 
 POLL_S = 0.08
 RESEND_S = 0.4
@@ -43,6 +49,7 @@ MEDIA_RESEND_S = 2.0
 MEDIA_PLAYING_SEND_S = 0.25
 # Bias slightly behind wall-clock so the OLED does not lead the Windows flyout.
 MEDIA_LEAD_COMPENSATION_S = 0.35
+DISCORD_SEND_S = 0.35
 
 
 @dataclass(frozen=True)
@@ -95,6 +102,23 @@ def read_volume() -> int:
 
 def send_volume(dev: hid.device, percent: int) -> None:
     n = dev.write(bytes([REPORT_ID_VOLUME, percent]))
+    if n is None or n < 0:
+        raise OSError("hid write failed")
+
+
+def pack_discord(open_: bool, muted: bool, deaf: bool) -> int:
+    flags = 0
+    if open_:
+        flags |= DISCORD_FLAG_OPEN
+    if muted:
+        flags |= DISCORD_FLAG_MUTED
+    if deaf:
+        flags |= DISCORD_FLAG_DEAF
+    return flags
+
+
+def send_discord(dev: hid.device, flags: int) -> None:
+    n = dev.write(bytes([REPORT_ID_DISCORD, flags & 0xFF]))
     if n is None or n < 0:
         raise OSError("hid write failed")
 
@@ -230,6 +254,7 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     manager: Optional[SessionManager] = None
+    discord = DiscordVoice()
 
     dev: Optional[hid.device] = None
     last_vol: Optional[int] = None
@@ -237,6 +262,8 @@ def main() -> None:
     last_media = EMPTY_MEDIA
     last_media_payload = pack_media(EMPTY_MEDIA)
     last_media_sent = 0.0
+    last_discord_flags: Optional[int] = None
+    last_discord_sent = 0.0
 
     while True:
         try:
@@ -248,6 +275,7 @@ def main() -> None:
                 last_vol = None
                 last_media = EMPTY_MEDIA
                 last_media_payload = pack_media(EMPTY_MEDIA)
+                last_discord_flags = None
                 print("Connected", flush=True)
 
             now = time.monotonic()
@@ -270,6 +298,13 @@ def main() -> None:
                 last_media_payload = payload
                 last_media_sent = now
 
+            d_open, d_muted, d_deaf = discord.snapshot()
+            d_flags = pack_discord(d_open, d_muted, d_deaf)
+            if d_flags != last_discord_flags or now - last_discord_sent >= DISCORD_SEND_S:
+                send_discord(dev, d_flags)
+                last_discord_flags = d_flags
+                last_discord_sent = now
+
         except KeyboardInterrupt:
             break
         except OSError as exc:
@@ -283,14 +318,16 @@ def main() -> None:
             time.sleep(0.5)
             continue
         except Exception as exc:
-            # Media APIs can fail transiently; keep volume sync alive.
-            print(f"Media: {exc}", flush=True)
+            # Media/Discord APIs can fail transiently; keep volume sync alive.
+            print(f"Host: {exc}", flush=True)
             manager = None
+            discord.close()
             time.sleep(0.5)
             continue
 
         time.sleep(POLL_S)
 
+    discord.close()
     if dev is not None:
         try:
             dev.close()

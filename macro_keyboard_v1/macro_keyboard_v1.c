@@ -60,6 +60,10 @@
 #define MEDIA_FLAG_PLAYING  0x02u
 #define MEDIA_FLAG_TIMELINE 0x04u
 #define MEDIA_PAUSE_LABELS_MS (60u * 1000u)
+#define DISCORD_FLAG_OPEN   0x01u
+#define DISCORD_FLAG_MUTED  0x02u
+#define DISCORD_FLAG_DEAF   0x04u
+#define DISCORD_REPORT_LEN  1
 
 static const uint col_pins[NUM_COLS] = {COL0_PIN, COL1_PIN, COL2_PIN};
 static const uint row_pins[NUM_ROWS] = {ROW0_PIN, ROW1_PIN, ROW2_PIN};
@@ -122,6 +126,9 @@ static uint32_t g_media_pos_at_ms = 0;
 static uint32_t g_media_paused_since_ms = 0;
 static char g_media_title[MEDIA_TITLE_LEN + 1];
 static char g_media_artist[MEDIA_ARTIST_LEN + 1];
+static bool g_discord_open = false;
+static bool g_discord_muted = false;
+static bool g_discord_deaf = false;
 
 static hid_step_t hid_q[HID_Q_LEN];
 static uint8_t hid_q_head = 0;
@@ -397,6 +404,67 @@ static void oled_lock_box(int x, int y, bool on) {
     }
 }
 
+/* 7x7 mic: capsule + stand. Crossed when muted. */
+static void oled_mic_icon(int x, int y, bool muted) {
+    oled_pixel(x + 2, y + 0, true);
+    oled_pixel(x + 3, y + 0, true);
+    oled_pixel(x + 4, y + 0, true);
+    oled_pixel(x + 1, y + 1, true);
+    oled_pixel(x + 5, y + 1, true);
+    oled_pixel(x + 1, y + 2, true);
+    oled_pixel(x + 5, y + 2, true);
+    oled_pixel(x + 1, y + 3, true);
+    oled_pixel(x + 5, y + 3, true);
+    oled_pixel(x + 2, y + 4, true);
+    oled_pixel(x + 3, y + 4, true);
+    oled_pixel(x + 4, y + 4, true);
+    oled_pixel(x + 3, y + 5, true);
+    oled_pixel(x + 2, y + 6, true);
+    oled_pixel(x + 3, y + 6, true);
+    oled_pixel(x + 4, y + 6, true);
+    if (muted) {
+        oled_pixel(x + 6, y + 0, true);
+        oled_pixel(x + 5, y + 1, true);
+        oled_pixel(x + 4, y + 2, true);
+        oled_pixel(x + 3, y + 3, true);
+        oled_pixel(x + 2, y + 4, true);
+        oled_pixel(x + 1, y + 5, true);
+        oled_pixel(x + 0, y + 6, true);
+    }
+}
+
+/* 7x7 headphones. Crossed when deafened. */
+static void oled_headphone_icon(int x, int y, bool deaf) {
+    oled_pixel(x + 2, y + 0, true);
+    oled_pixel(x + 3, y + 0, true);
+    oled_pixel(x + 4, y + 0, true);
+    oled_pixel(x + 1, y + 1, true);
+    oled_pixel(x + 5, y + 1, true);
+    oled_pixel(x + 0, y + 2, true);
+    oled_pixel(x + 6, y + 2, true);
+    oled_pixel(x + 0, y + 3, true);
+    oled_pixel(x + 6, y + 3, true);
+    oled_pixel(x + 0, y + 4, true);
+    oled_pixel(x + 1, y + 4, true);
+    oled_pixel(x + 5, y + 4, true);
+    oled_pixel(x + 6, y + 4, true);
+    oled_pixel(x + 0, y + 5, true);
+    oled_pixel(x + 1, y + 5, true);
+    oled_pixel(x + 5, y + 5, true);
+    oled_pixel(x + 6, y + 5, true);
+    oled_pixel(x + 0, y + 6, true);
+    oled_pixel(x + 6, y + 6, true);
+    if (deaf) {
+        oled_pixel(x + 6, y + 0, true);
+        oled_pixel(x + 5, y + 1, true);
+        oled_pixel(x + 4, y + 2, true);
+        oled_pixel(x + 3, y + 3, true);
+        oled_pixel(x + 2, y + 4, true);
+        oled_pixel(x + 1, y + 5, true);
+        oled_pixel(x + 0, y + 6, true);
+    }
+}
+
 static void oled_bar(int x, int y, int w, int h, int pct) {
     if (pct < 0) {
         pct = 0;
@@ -438,7 +506,7 @@ static tusb_desc_device_t const desc_device = {
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor           = USB_VID,
     .idProduct          = USB_PID,
-    .bcdDevice          = 0x0104,
+    .bcdDevice          = 0x0105,
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
     .iSerialNumber      = 0x03,
@@ -454,11 +522,12 @@ static uint8_t const desc_hid_report[] = {
     TUD_HID_REPORT_DESC_CONSUMER(HID_REPORT_ID(REPORT_ID_CONSUMER)),
 };
 
-/* Second HID interface: host writes volume + now-playing over vendor page. */
-#define REPORT_ID_VOLUME 1
-#define REPORT_ID_MEDIA  2
+/* Second HID interface: host writes volume + now-playing + Discord status. */
+#define REPORT_ID_VOLUME  1
+#define REPORT_ID_MEDIA   2
+#define REPORT_ID_DISCORD 3
 
-/* Report 1: 1-byte volume. Report 2: 48-byte media metadata (OUTPUT only). */
+/* Report 1: volume. Report 2: media metadata. Report 3: Discord presence. */
 static uint8_t const desc_hid_vendor[] = {
     0x06, 0x00, 0xFF, /* Usage Page (Vendor 0xFF00) */
     0x09, 0x01,       /* Usage (0x01) */
@@ -480,6 +549,14 @@ static uint8_t const desc_hid_vendor[] = {
     0x26, 0xFF, 0x00,
     0x75, 0x08,
     0x95, MEDIA_REPORT_LEN,
+    0x91, 0x02, /* Output */
+
+    0x85, REPORT_ID_DISCORD,
+    0x09, 0x04,
+    0x15, 0x00,
+    0x26, 0xFF, 0x00,
+    0x75, 0x08,
+    0x95, DISCORD_REPORT_LEN,
     0x91, 0x02, /* Output */
 
     0xC0
@@ -685,6 +762,20 @@ static void host_set_media(uint8_t const *data, uint16_t len) {
     }
 }
 
+static void host_set_discord(uint8_t flags) {
+    bool open = (flags & DISCORD_FLAG_OPEN) != 0;
+    bool muted = open && ((flags & DISCORD_FLAG_MUTED) != 0);
+    bool deaf = open && ((flags & DISCORD_FLAG_DEAF) != 0);
+
+    if (open == g_discord_open && muted == g_discord_muted && deaf == g_discord_deaf) {
+        return;
+    }
+    g_discord_open = open;
+    g_discord_muted = muted;
+    g_discord_deaf = deaf;
+    g_display_dirty = true;
+}
+
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
                                hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen) {
     (void)report_type;
@@ -714,6 +805,9 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                    buffer[0] == REPORT_ID_MEDIA) {
             data = buffer + 1;
             len = MEDIA_REPORT_LEN;
+        } else if (rid == REPORT_ID_DISCORD && len >= 2 && buffer[0] == REPORT_ID_DISCORD) {
+            data = buffer + 1;
+            len = (uint16_t)(bufsize - 1);
         }
 
         if (rid == REPORT_ID_VOLUME && len >= 1) {
@@ -722,6 +816,10 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         }
         if (rid == REPORT_ID_MEDIA) {
             host_set_media(data, len);
+            return;
+        }
+        if (rid == REPORT_ID_DISCORD && len >= 1) {
+            host_set_discord(data[0]);
             return;
         }
         /* Legacy: bare 1-byte volume with no report id. */
@@ -1213,21 +1311,25 @@ static void draw_status_bar(void) {
     const char *tag = mode_tag();
     oled_text_badge(1, 2, tag);
 
-    char lat[12];
-    if (g_latency_ms < 10.0f) {
-        snprintf(lat, sizeof(lat), "%.1fms", (double)g_latency_ms);
-    } else {
-        snprintf(lat, sizeof(lat), "%.0fms", (double)g_latency_ms);
-    }
-    int lat_w = (int)strlen(lat) * 6 - 1;
-    int lat_x = OLED_WIDTH - 1 - lat_w;
-    oled_text(lat_x, 2, lat);
-
     int lock_x = 1 + (int)strlen(tag) * 6 + 4;
     oled_char(lock_x, 2, 'C', false);
     oled_lock_box(lock_x + 7, 2, g_caps);
     oled_char(lock_x + 16, 2, 'N', false);
     oled_lock_box(lock_x + 23, 2, g_num);
+
+    if (g_discord_open) {
+        /* Right-aligned like latency: mic then headphones (Discord order). */
+        oled_mic_icon(OLED_WIDTH - 16, 2, g_discord_muted || g_discord_deaf);
+        oled_headphone_icon(OLED_WIDTH - 7, 2, g_discord_deaf);
+    } else {
+        char lat[12];
+        if (g_latency_ms < 10.0f) {
+            snprintf(lat, sizeof(lat), "%.1fms", (double)g_latency_ms);
+        } else {
+            snprintf(lat, sizeof(lat), "%.0fms", (double)g_latency_ms);
+        }
+        oled_text_right(OLED_WIDTH - 1, 2, lat);
+    }
     oled_hline_dashed(ZONE_TOP_H - 1);
 }
 
