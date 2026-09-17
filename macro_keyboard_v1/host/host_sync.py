@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -33,6 +35,8 @@ VENDOR_USAGE_PAGE = 0xFF00
 REPORT_ID_VOLUME = 1
 REPORT_ID_MEDIA = 2
 REPORT_ID_DISCORD = 3
+REPORT_ID_HOSTCMD = 4
+HOST_CMD_OPEN_SPOTIFY = 1
 MEDIA_REPORT_LEN = 48
 MEDIA_TITLE_LEN = 21
 MEDIA_ARTIST_LEN = 21
@@ -87,7 +91,48 @@ def open_keyboard() -> hid.device:
         raise OSError("keyboard not found")
     dev = hid.device()
     dev.open_path(path)
+    try:
+        dev.set_nonblocking(True)
+    except Exception:
+        pass
     return dev
+
+
+def launch_spotify() -> None:
+    try:
+        os.startfile("spotify:")  # type: ignore[attr-defined]
+        return
+    except OSError:
+        pass
+
+    local = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        os.path.join(local, "Microsoft", "WindowsApps", "Spotify.exe"),
+        os.path.join(local, "Spotify", "Spotify.exe"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            subprocess.Popen([path], close_fds=True)
+            return
+    print("Spotify launch failed", flush=True)
+
+
+def poll_device_commands(dev: hid.device) -> None:
+    """Read device→host vendor IN reports (e.g. open Spotify)."""
+    for _ in range(8):
+        try:
+            data = dev.read(64)
+        except Exception:
+            break
+        if not data:
+            break
+        raw = bytes(data)
+        if len(raw) >= 2 and raw[0] == REPORT_ID_HOSTCMD:
+            if raw[1] == HOST_CMD_OPEN_SPOTIFY:
+                launch_spotify()
+        elif len(raw) >= 1 and raw[0] == HOST_CMD_OPEN_SPOTIFY and len(raw) == 1:
+            # Some stacks strip report ID on read.
+            launch_spotify()
 
 
 def read_volume() -> int:
@@ -279,6 +324,8 @@ def main() -> None:
                 print("Connected", flush=True)
 
             now = time.monotonic()
+            poll_device_commands(dev)
+
             vol = read_volume()
             if vol != last_vol or now - last_vol_sent >= RESEND_S:
                 send_volume(dev, vol)

@@ -129,6 +129,7 @@ static char g_media_artist[MEDIA_ARTIST_LEN + 1];
 static bool g_discord_open = false;
 static bool g_discord_muted = false;
 static bool g_discord_deaf = false;
+static uint8_t g_host_cmd_pending = 0;
 
 static hid_step_t hid_q[HID_Q_LEN];
 static uint8_t hid_q_head = 0;
@@ -506,7 +507,7 @@ static tusb_desc_device_t const desc_device = {
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor           = USB_VID,
     .idProduct          = USB_PID,
-    .bcdDevice          = 0x0105,
+    .bcdDevice          = 0x0106,
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
     .iSerialNumber      = 0x03,
@@ -522,12 +523,15 @@ static uint8_t const desc_hid_report[] = {
     TUD_HID_REPORT_DESC_CONSUMER(HID_REPORT_ID(REPORT_ID_CONSUMER)),
 };
 
-/* Second HID interface: host writes volume + now-playing + Discord status. */
-#define REPORT_ID_VOLUME  1
-#define REPORT_ID_MEDIA   2
-#define REPORT_ID_DISCORD 3
+/* Second HID interface: host ↔ device vendor reports. */
+#define REPORT_ID_VOLUME   1
+#define REPORT_ID_MEDIA    2
+#define REPORT_ID_DISCORD  3
+#define REPORT_ID_HOSTCMD  4
 
-/* Report 1: volume. Report 2: media metadata. Report 3: Discord presence. */
+#define HOST_CMD_OPEN_SPOTIFY 1
+
+/* Report 1: volume. Report 2: media. Report 3: Discord. Report 4: host cmds (IN). */
 static uint8_t const desc_hid_vendor[] = {
     0x06, 0x00, 0xFF, /* Usage Page (Vendor 0xFF00) */
     0x09, 0x01,       /* Usage (0x01) */
@@ -558,6 +562,14 @@ static uint8_t const desc_hid_vendor[] = {
     0x75, 0x08,
     0x95, DISCORD_REPORT_LEN,
     0x91, 0x02, /* Output */
+
+    0x85, REPORT_ID_HOSTCMD,
+    0x09, 0x05,
+    0x15, 0x00,
+    0x26, 0xFF, 0x00,
+    0x75, 0x08,
+    0x95, 0x01,
+    0x81, 0x02, /* Input: device → host commands */
 
     0xC0
 };
@@ -774,6 +786,25 @@ static void host_set_discord(uint8_t flags) {
     g_discord_muted = muted;
     g_discord_deaf = deaf;
     g_display_dirty = true;
+}
+
+static void host_cmd_request(uint8_t cmd) {
+    if (cmd == 0) {
+        return;
+    }
+    g_host_cmd_pending = cmd;
+}
+
+static void host_cmd_pump(void) {
+    if (g_host_cmd_pending == 0) {
+        return;
+    }
+    if (!tud_mounted() || !tud_hid_n_ready(1)) {
+        return;
+    }
+    uint8_t cmd = g_host_cmd_pending;
+    g_host_cmd_pending = 0;
+    tud_hid_n_report(1, REPORT_ID_HOSTCMD, &cmd, 1);
 }
 
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
@@ -1130,7 +1161,7 @@ static void on_button(int button) {
             break;
         case 6:
             if (fn) {
-                hid_consumer(HID_USAGE_CONSUMER_AL_CONSUMER_CONTROL_CONFIGURATION);
+                host_cmd_request(HOST_CMD_OPEN_SPOTIFY);
             } else {
                 hid_consumer(HID_USAGE_CONSUMER_MUTE);
             }
@@ -1232,7 +1263,7 @@ static const char *const labels_media[8] = {
 };
 static const char *const labels_media_fn[8] = {
     "1:prev trk", "2:stop", "3:next trk", "4:scrb bck",
-    "5:scrb fwd", "6:app mus", "7:deafen", "8:rec scr"
+    "5:scrb fwd", "6:spotify", "7:deafen", "8:rec scr"
 };
 
 static const char *const labels_nav[8] = {
@@ -1595,6 +1626,7 @@ int main(void) {
 
         encoder_nav_timeout(now_ms);
         hid_pump(now_ms);
+        host_cmd_pump();
         oled_idle_tick(now_ms);
 
         if (!g_oled_asleep) {

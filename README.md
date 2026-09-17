@@ -30,7 +30,7 @@ Firmware lives in [`macro_keyboard_v1/`](macro_keyboard_v1/). Bring-up experimen
 USB identity: **VID `0xCAFE`**, **PID `0x4D4B`**. Composite device with two HID interfaces (boot-protocol none):
 
 1. Keyboard (report ID 1) + consumer (report ID 2), interrupt IN `0x81`
-2. Vendor usage page `0xFF00` IN/OUT (`0x82` / `0x02`) — report ID **1** volume (1 byte), report ID **2** now-playing (48 bytes), report ID **3** Discord status (1 byte flags)
+2. Vendor usage page `0xFF00` IN/OUT (`0x82` / `0x02`) — report ID **1** volume, **2** now-playing, **3** Discord status (host→device); report ID **4** host commands such as open Spotify (device→host)
 
 ## Hardware
 
@@ -116,7 +116,7 @@ Encoder **click** cycles `DEV → MEDIA → NAV`. **B9** is hold-FN (OLED tag ge
 | B3 | Next track | same |
 | B4 | Scrub back (Left) | same |
 | B5 | Scrub forward (Right) | same |
-| B6 | Mute output | Open music / mixer app |
+| B6 | Mute output | Open Spotify (via host helper) |
 | B7 | Mic mute (`Ctrl+Shift+M`) | Deafen (`Ctrl+Shift+D`) |
 | B8 | Snip screen (`Win+Shift+S`) | Record screen (`Win+Alt+R`) |
 | Encoder | Master volume (HID consumer) | Fine seek (`,` / `.`) |
