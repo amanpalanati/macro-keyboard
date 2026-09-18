@@ -30,7 +30,7 @@ Firmware lives in [`macro_keyboard_v1/`](macro_keyboard_v1/). Bring-up experimen
 USB identity: **VID `0xCAFE`**, **PID `0x4D4B`**. Composite device with two HID interfaces (boot-protocol none):
 
 1. Keyboard (report ID 1) + consumer (report ID 2), interrupt IN `0x81`
-2. Vendor usage page `0xFF00` IN/OUT (`0x82` / `0x02`) — report ID **1** volume, **2** now-playing, **3** Discord status (host→device); report ID **4** host commands such as open Spotify (device→host)
+2. Vendor usage page `0xFF00` IN/OUT (`0x82` / `0x02`) — report ID **1** volume, **2** media meta, **3** Discord, **5/6** title/artist (60 chars each; FS USB keeps packets ≤64), **4** host commands (device→host)
 
 ## Hardware
 
@@ -174,7 +174,17 @@ pip install -r requirements.txt
 .\install_startup.ps1
 ```
 
-That starts a hidden `pythonw` process and adds a Startup shortcut so volume + now-playing track Windows after login. Remove with `.\uninstall_startup.ps1`. Flash firmware **bcdDevice ≥ 0x0104** (this tree) so the vendor HID descriptor accepts the media report.
+That starts a hidden `pythonw` process and adds a Startup shortcut so volume + now-playing track Windows after login.
+
+After changing host scripts, restart the helper (no uninstall needed):
+
+```powershell
+.\update_helper.ps1
+# or also refresh pip packages:
+.\update_helper.ps1 -Deps
+```
+
+Remove with `.\uninstall_startup.ps1`. Flash matching firmware when the vendor HID reports change.
 
 ---
 

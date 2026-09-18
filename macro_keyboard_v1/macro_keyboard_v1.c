@@ -53,13 +53,17 @@
 #define OLED_FRAME_MS   40
 #define OLED_SLEEP_MS   (3u * 60u * 1000u)
 #define HID_Q_LEN       48
-#define MEDIA_TITLE_LEN 21
-#define MEDIA_ARTIST_LEN 21
-#define MEDIA_REPORT_LEN 48
+#define MEDIA_TITLE_LEN 60
+#define MEDIA_ARTIST_LEN 60
+#define MEDIA_META_LEN 5
 #define MEDIA_FLAG_ACTIVE   0x01u
 #define MEDIA_FLAG_PLAYING  0x02u
 #define MEDIA_FLAG_TIMELINE 0x04u
 #define MEDIA_PAUSE_LABELS_MS (60u * 1000u)
+#define MEDIA_MARQUEE_VIEW_W (OLED_WIDTH - 2)
+#define MEDIA_MARQUEE_STEP_MS 55u
+#define MEDIA_MARQUEE_PAUSE_MS 5000u
+#define MEDIA_MARQUEE_GAP_PX 18
 #define DISCORD_FLAG_OPEN   0x01u
 #define DISCORD_FLAG_MUTED  0x02u
 #define DISCORD_FLAG_DEAF   0x04u
@@ -126,6 +130,16 @@ static uint32_t g_media_pos_at_ms = 0;
 static uint32_t g_media_paused_since_ms = 0;
 static char g_media_title[MEDIA_TITLE_LEN + 1];
 static char g_media_artist[MEDIA_ARTIST_LEN + 1];
+
+typedef struct {
+    uint16_t px;
+    uint8_t  phase; /* 0=pause start, 1=scroll, 2=pause end */
+    uint32_t phase_ms;
+} media_marquee_t;
+
+static media_marquee_t g_marquee_title;
+static media_marquee_t g_marquee_artist;
+
 static bool g_discord_open = false;
 static bool g_discord_muted = false;
 static bool g_discord_deaf = false;
@@ -354,11 +368,109 @@ static void oled_char(int x, int y, char c, bool invert) {
     }
 }
 
+static void oled_char_clipped(int x, int y, char c, int clip_x0, int clip_x1) {
+    if (c < ' ' || c > '~') {
+        c = '?';
+    }
+    const uint8_t *glyph = font5x7[c - ' '];
+    for (int col = 0; col < 5; col++) {
+        int px = x + col;
+        if (px < clip_x0 || px >= clip_x1) {
+            continue;
+        }
+        uint8_t bits = glyph[col];
+        for (int row = 0; row < 7; row++) {
+            if ((bits >> row) & 1) {
+                oled_pixel(px, y + row, true);
+            }
+        }
+    }
+}
+
 static void oled_text(int x, int y, const char *s) {
     while (*s) {
         oled_char(x, y, *s++, false);
         x += 6;
     }
+}
+
+static int oled_text_width(const char *s) {
+    int n = (int)strlen(s);
+    if (n <= 0) {
+        return 0;
+    }
+    return n * 6 - 1;
+}
+
+static void oled_text_marquee(int x, int y, int view_w, const char *s, int scroll_px,
+                              int gap_px) {
+    int text_w = oled_text_width(s);
+    if (text_w <= view_w) {
+        oled_text(x, y, s);
+        return;
+    }
+
+    int clip0 = x;
+    int clip1 = x + view_w;
+    int stride = (int)strlen(s) * 6 + gap_px;
+    int draw_x = x - (scroll_px % stride);
+
+    for (int copy = 0; copy < 2; copy++) {
+        int cx = draw_x + copy * stride;
+        for (const char *p = s; *p; p++) {
+            oled_char_clipped(cx, y, *p, clip0, clip1);
+            cx += 6;
+        }
+    }
+}
+
+static void marquee_reset(media_marquee_t *m, uint32_t now_ms) {
+    m->px = 0;
+    m->phase = 0;
+    m->phase_ms = now_ms;
+}
+
+static void marquee_tick(media_marquee_t *m, int text_w, int view_w, int stride,
+                         uint32_t now_ms) {
+    if (text_w <= view_w || stride <= 0) {
+        m->px = 0;
+        m->phase = 0;
+        return;
+    }
+
+    switch (m->phase) {
+    case 0: /* pause with start aligned to the left edge */
+        m->px = 0;
+        if ((now_ms - m->phase_ms) >= MEDIA_MARQUEE_PAUSE_MS) {
+            m->phase = 1;
+            m->phase_ms = now_ms;
+        }
+        break;
+    case 1: /* continuous loop; pause again when start returns to the left */
+        if ((now_ms - m->phase_ms) >= MEDIA_MARQUEE_STEP_MS) {
+            m->phase_ms = now_ms;
+            m->px++;
+            if (m->px >= (uint16_t)stride) {
+                m->px = 0;
+                m->phase = 0;
+                m->phase_ms = now_ms;
+            }
+        }
+        break;
+    default:
+        marquee_reset(m, now_ms);
+        break;
+    }
+}
+
+static bool media_marquee_active(void) {
+    if (!g_media_active) {
+        return false;
+    }
+    const char *title = g_media_title[0] ? g_media_title : "Unknown";
+    const char *artist = g_media_artist;
+    return (oled_text_width(title) > MEDIA_MARQUEE_VIEW_W) ||
+           (artist[0] && oled_text_width(artist) > MEDIA_MARQUEE_VIEW_W);
 }
 
 static void oled_text_badge(int x, int y, const char *s) {
@@ -507,7 +619,7 @@ static tusb_desc_device_t const desc_device = {
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor           = USB_VID,
     .idProduct          = USB_PID,
-    .bcdDevice          = 0x0106,
+    .bcdDevice          = 0x010A,
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
     .iSerialNumber      = 0x03,
@@ -523,15 +635,18 @@ static uint8_t const desc_hid_report[] = {
     TUD_HID_REPORT_DESC_CONSUMER(HID_REPORT_ID(REPORT_ID_CONSUMER)),
 };
 
-/* Second HID interface: host ↔ device vendor reports. */
-#define REPORT_ID_VOLUME   1
-#define REPORT_ID_MEDIA    2
-#define REPORT_ID_DISCORD  3
-#define REPORT_ID_HOSTCMD  4
+/* Second HID interface: host ↔ device vendor reports.
+ * FS interrupt EPs are capped at 64 bytes, so long strings are split. */
+#define REPORT_ID_VOLUME       1
+#define REPORT_ID_MEDIA        2
+#define REPORT_ID_DISCORD      3
+#define REPORT_ID_HOSTCMD      4
+#define REPORT_ID_MEDIA_TITLE  5
+#define REPORT_ID_MEDIA_ARTIST 6
 
 #define HOST_CMD_OPEN_SPOTIFY 1
 
-/* Report 1: volume. Report 2: media. Report 3: Discord. Report 4: host cmds (IN). */
+/* 1 volume, 2 media meta, 3 Discord, 4 host cmds IN, 5 title, 6 artist. */
 static uint8_t const desc_hid_vendor[] = {
     0x06, 0x00, 0xFF, /* Usage Page (Vendor 0xFF00) */
     0x09, 0x01,       /* Usage (0x01) */
@@ -552,8 +667,8 @@ static uint8_t const desc_hid_vendor[] = {
     0x15, 0x00,
     0x26, 0xFF, 0x00,
     0x75, 0x08,
-    0x95, MEDIA_REPORT_LEN,
-    0x91, 0x02, /* Output */
+    0x95, MEDIA_META_LEN,
+    0x91, 0x02, /* Output: flags + pos + dur */
 
     0x85, REPORT_ID_DISCORD,
     0x09, 0x04,
@@ -570,6 +685,22 @@ static uint8_t const desc_hid_vendor[] = {
     0x75, 0x08,
     0x95, 0x01,
     0x81, 0x02, /* Input: device → host commands */
+
+    0x85, REPORT_ID_MEDIA_TITLE,
+    0x09, 0x06,
+    0x15, 0x00,
+    0x26, 0xFF, 0x00,
+    0x75, 0x08,
+    0x95, MEDIA_TITLE_LEN,
+    0x91, 0x02, /* Output */
+
+    0x85, REPORT_ID_MEDIA_ARTIST,
+    0x09, 0x07,
+    0x15, 0x00,
+    0x26, 0xFF, 0x00,
+    0x75, 0x08,
+    0x95, MEDIA_ARTIST_LEN,
+    0x91, 0x02, /* Output */
 
     0xC0
 };
@@ -699,7 +830,7 @@ static bool media_show_now_playing(uint32_t now_ms) {
 }
 
 static void host_set_media(uint8_t const *data, uint16_t len) {
-    if (len < MEDIA_REPORT_LEN) {
+    if (len < MEDIA_META_LEN) {
         return;
     }
 
@@ -709,15 +840,8 @@ static void host_set_media(uint8_t const *data, uint16_t len) {
     bool timeline = (data[0] & MEDIA_FLAG_TIMELINE) != 0;
     uint16_t pos = media_read_u16le(&data[1]);
     uint16_t dur = media_read_u16le(&data[3]);
-    char title[MEDIA_TITLE_LEN + 1];
-    char artist[MEDIA_ARTIST_LEN + 1];
-
-    media_copy_field(title, sizeof(title), &data[5], MEDIA_TITLE_LEN);
-    media_copy_field(artist, sizeof(artist), &data[5 + MEDIA_TITLE_LEN], MEDIA_ARTIST_LEN);
 
     uint32_t now = to_ms_since_boot(get_absolute_time());
-    bool meta_changed = (strcmp(title, g_media_title) != 0) ||
-                        (strcmp(artist, g_media_artist) != 0);
     bool play_edge = (playing && active) != was_playing;
     bool adopt_pos = true;
 
@@ -725,27 +849,34 @@ static void host_set_media(uint8_t const *data, uint16_t len) {
      * While playing, ignore small backwards SMTC glitches. Always snap on
      * pause/play edges, seeks, and track changes.
      */
-    if (active && playing && was_playing && timeline && g_media_timeline &&
-        !meta_changed && !play_edge) {
+    if (active && playing && was_playing && timeline && g_media_timeline && !play_edge) {
         int delta = (int)pos - (int)g_media_pos_s;
         if (delta < 0 && delta > -15) {
             adopt_pos = false;
         }
     }
-    if (!playing || play_edge || meta_changed) {
+    if (!playing || play_edge) {
         adopt_pos = true;
     }
 
     bool changed = (active != g_media_active) || (playing != g_media_playing) ||
                    (timeline != g_media_timeline) || (dur != g_media_dur_s) ||
-                   meta_changed || (adopt_pos && pos != g_media_pos_s);
+                   (adopt_pos && pos != g_media_pos_s);
 
     g_media_active = active;
     g_media_playing = playing && active;
     g_media_timeline = timeline && active;
     g_media_dur_s = dur;
-    memcpy(g_media_title, title, sizeof(g_media_title));
-    memcpy(g_media_artist, artist, sizeof(g_media_artist));
+
+    if (!active) {
+        if (g_media_title[0] || g_media_artist[0]) {
+            g_media_title[0] = '\0';
+            g_media_artist[0] = '\0';
+            marquee_reset(&g_marquee_title, now);
+            marquee_reset(&g_marquee_artist, now);
+            changed = true;
+        }
+    }
 
     if (adopt_pos) {
         g_media_pos_s = pos;
@@ -772,6 +903,29 @@ static void host_set_media(uint8_t const *data, uint16_t len) {
     if (changed) {
         g_display_dirty = true;
     }
+}
+
+static void host_set_media_title(uint8_t const *data, uint16_t len) {
+    char title[MEDIA_TITLE_LEN + 1];
+    media_copy_field(title, sizeof(title), data, len < MEDIA_TITLE_LEN ? len : MEDIA_TITLE_LEN);
+    if (strcmp(title, g_media_title) == 0) {
+        return;
+    }
+    memcpy(g_media_title, title, sizeof(g_media_title));
+    marquee_reset(&g_marquee_title, to_ms_since_boot(get_absolute_time()));
+    g_display_dirty = true;
+}
+
+static void host_set_media_artist(uint8_t const *data, uint16_t len) {
+    char artist[MEDIA_ARTIST_LEN + 1];
+    media_copy_field(artist, sizeof(artist), data,
+                     len < MEDIA_ARTIST_LEN ? len : MEDIA_ARTIST_LEN);
+    if (strcmp(artist, g_media_artist) == 0) {
+        return;
+    }
+    memcpy(g_media_artist, artist, sizeof(g_media_artist));
+    marquee_reset(&g_marquee_artist, to_ms_since_boot(get_absolute_time()));
+    g_display_dirty = true;
 }
 
 static void host_set_discord(uint8_t flags) {
@@ -829,14 +983,10 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
             rid = buffer[0];
             data = buffer + 1;
             len = (uint16_t)(bufsize - 1);
-        } else if (rid == REPORT_ID_VOLUME && len >= 2 && buffer[0] == REPORT_ID_VOLUME) {
-            data = buffer + 1;
-            len = (uint16_t)(bufsize - 1);
-        } else if (rid == REPORT_ID_MEDIA && len == (MEDIA_REPORT_LEN + 1) &&
-                   buffer[0] == REPORT_ID_MEDIA) {
-            data = buffer + 1;
-            len = MEDIA_REPORT_LEN;
-        } else if (rid == REPORT_ID_DISCORD && len >= 2 && buffer[0] == REPORT_ID_DISCORD) {
+        } else if (len >= 2 && buffer[0] == rid &&
+                   (rid == REPORT_ID_VOLUME || rid == REPORT_ID_MEDIA ||
+                    rid == REPORT_ID_DISCORD || rid == REPORT_ID_MEDIA_TITLE ||
+                    rid == REPORT_ID_MEDIA_ARTIST)) {
             data = buffer + 1;
             len = (uint16_t)(bufsize - 1);
         }
@@ -847,6 +997,14 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         }
         if (rid == REPORT_ID_MEDIA) {
             host_set_media(data, len);
+            return;
+        }
+        if (rid == REPORT_ID_MEDIA_TITLE) {
+            host_set_media_title(data, len);
+            return;
+        }
+        if (rid == REPORT_ID_MEDIA_ARTIST) {
+            host_set_media_artist(data, len);
             return;
         }
         if (rid == REPORT_ID_DISCORD && len >= 1) {
@@ -1307,9 +1465,15 @@ static void draw_now_playing(void) {
     uint16_t pos = media_display_pos_s(now);
     uint16_t dur = g_media_timeline ? g_media_dur_s : 0;
     int pct = 0;
+    int view_w = MEDIA_MARQUEE_VIEW_W;
+    int title_stride = (int)strlen(title) * 6 + MEDIA_MARQUEE_GAP_PX;
+    int artist_stride = (int)strlen(artist) * 6 + MEDIA_MARQUEE_GAP_PX;
 
-    oled_text(1, 14, title);
-    oled_text(1, 24, artist);
+    marquee_tick(&g_marquee_title, oled_text_width(title), view_w, title_stride, now);
+    marquee_tick(&g_marquee_artist, oled_text_width(artist), view_w, artist_stride, now);
+
+    oled_text_marquee(1, 14, view_w, title, g_marquee_title.px, MEDIA_MARQUEE_GAP_PX);
+    oled_text_marquee(1, 24, view_w, artist, g_marquee_artist.px, MEDIA_MARQUEE_GAP_PX);
 
     if (g_media_timeline) {
         char left[12];
@@ -1637,7 +1801,10 @@ int main(void) {
                     g_oled_flushing = false;
                 }
             } else {
-                bool periodic = (now_ms - last_ui_ms) >= 250;
+                bool np = (g_mode == MODE_MEDIA) && media_show_now_playing(now_ms);
+                bool marquee = np && media_marquee_active();
+                uint32_t period_ms = marquee ? MEDIA_MARQUEE_STEP_MS : 250u;
+                bool periodic = (now_ms - last_ui_ms) >= period_ms;
                 bool paced = (now_ms - last_ui_ms) >= OLED_FRAME_MS;
                 if (periodic || (g_display_dirty && paced)) {
                     ui_draw();

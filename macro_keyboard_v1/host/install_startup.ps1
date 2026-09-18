@@ -47,13 +47,18 @@ $lnk.Save()
 $already = Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe' OR Name = 'python.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine -like "*host_sync.py*" }
 
-if (-not $already) {
-    Start-Process -FilePath $pythonw -ArgumentList "`"$script`"" -WorkingDirectory $hostDir -WindowStyle Hidden
-    Write-Host "Started in the background."
-} else {
-    Write-Host "Already running."
+foreach ($p in $already) {
+    Write-Host "Stopping old helper PID $($p.ProcessId)"
+    Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
 }
+if ($already) {
+    Start-Sleep -Milliseconds 400
+}
+
+Start-Process -FilePath $pythonw -ArgumentList "`"$script`"" -WorkingDirectory $hostDir -WindowStyle Hidden
+Write-Host "Started in the background."
 
 Write-Host "Installed: $lnkPath"
 Write-Host "It will start with Windows. Unplug/replug the keyboard anytime; the helper waits for it."
+Write-Host "After editing host scripts, run: .\update_helper.ps1"
 Write-Host "Remove with: .\uninstall_startup.ps1"
